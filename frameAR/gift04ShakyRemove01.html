@@ -1,0 +1,195 @@
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.156.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.156.0/examples/jsm/",
+                "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.2/dist/mindar-image-three.prod.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { MindARThree } from 'mindar-image-three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const start = async () => {
+                // Initialize MindAR
+                const mindarThree = new MindARThree({
+                    container: document.body,
+                    imageTargetSrc: './assets/textures/unfoldingQR.mind',
+                });
+                const { renderer, scene, camera } = mindarThree;
+
+                // Preload images
+                const textures = [];
+                const imageTotal = 16;
+                for (let i = 0; i < imageTotal; i++) {
+                    const texture = new THREE.TextureLoader().load(`./assets/textures/image${i}.jpg`);
+                    textures.push(texture);
+                }
+
+                // Create AR objects
+                const geometry = new THREE.SphereGeometry(0.95, 32);
+                const material = new THREE.MeshBasicMaterial({ map: textures[0], transparent: true, opacity: 0 });
+                const plane = new THREE.Mesh(geometry, material);
+
+                const geoCircle = new THREE.SphereGeometry(1, 32);
+                const matCircle = new THREE.MeshBasicMaterial({
+                    map: textures[0],
+                    transparent: false,
+                    opacity: 1,
+                    side: THREE.BackSide
+                });
+                const circle = new THREE.Mesh(geoCircle, matCircle);
+                circle.rotation.y -= THREE.MathUtils.degToRad(270);
+
+                const box = new THREE.BoxGeometry(1, 1, 1);
+                const matBox = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+                const cube = new THREE.Mesh(box, matBox);
+
+                // Create MindAR anchor
+                const anchor = mindarThree.addAnchor(0);
+                anchor.group.add(plane);
+                anchor.group.add(circle);
+                anchor.group.add(cube);
+
+                // Add light
+                const light = new THREE.DirectionalLight(0x00ff00, 1.5);
+                light.position.copy(camera.position);
+                light.target = anchor.group;
+                scene.add(light);
+                scene.add(light.target);
+
+                // Initialize frames
+                const frames = [];
+                const colors = [0x00ff00, 0xff0000, 0x0000ff, 0xff00ff];
+                const initialZ = camera.position.z;
+                const totalDistance = 5.5;
+                const speed = 0.15;
+                const numFrames = colors.length;
+                const interval = (totalDistance / numFrames) / speed * 1000;
+                const loopDuration = totalDistance / speed;
+                const dissolveDuration = 45;
+                const velocity = 0.5;
+
+                function createFrame(color, delay) {
+                    new GLTFLoader().load('frame.gltf', (gltf) => {
+                        const frame = gltf.scene;
+                        frame.position.set(0, 0, initialZ);
+                        frame.scale.set(5, 5, 5); // Adjust scale to match anchor size
+
+                        frame.rotationSpeedX = (Math.random() - 0.5) * 0.0001;
+                        frame.rotationSpeedY = (Math.random() - 0.5) * 0.0001;
+
+                        frame.added = false; // Ensure added property is initialized
+                        frames.push({ frame, delay });
+                    }, undefined, (error) => {
+                        console.error('An error occurred loading the model', error);
+                    });
+                }
+
+                colors.forEach((color, index) => {
+                    createFrame(color, index * interval);
+                });
+
+                // Add frames to the anchor group
+                function addFramesToScene(currentTime) {
+                    frames.forEach(({ frame, delay }) => {
+                        if (currentTime >= delay && !frame.added) {
+                            anchor.group.add(frame);
+                            frame.added = true;
+                            frame.startTime = delay;
+                        }
+                    });
+                }
+
+                // Smooth out movements using linear interpolation (lerp)
+                function lerp(a, b, t) {
+                    return a + (b - a) * t;
+                }
+
+                // Animation function
+                let lastTime = performance.now();
+                function animate(currentTime) {
+                    requestAnimationFrame(animate);
+
+                    const delta = (currentTime - lastTime) / 1000;
+                    lastTime = currentTime;
+
+                    addFramesToScene(currentTime);
+
+                    frames.forEach(({ frame, delay }) => {
+                        if (frame.added) {
+                            const elapsed = (currentTime - delay) / 1000;
+                            const cycleTime = elapsed % loopDuration;
+
+                            const z = initialZ - (cycleTime / loopDuration) * totalDistance * velocity;
+
+                            // Interpolate frame position to smooth out movements
+                            frame.position.z = lerp(frame.position.z, z, 0.1);
+
+                            if (cycleTime >= loopDuration - dissolveDuration) {
+                                frame.traverse((child) => {
+                                    if (child.isMesh) {
+                                        child.material.transparent = true;
+                                        child.material.opacity = lerp(child.material.opacity, 1 - (cycleTime - (loopDuration - dissolveDuration)) / dissolveDuration, 0.1);
+                                    }
+                                });
+                            } else {
+                                frame.traverse((child) => {
+                                    if (child.isMesh) {
+                                        child.material.transparent = true;
+                                        child.material.opacity = lerp(child.material.opacity, 1, 0.1);
+                                    }
+                                });
+                            }
+
+                            const scale = 1 - (cycleTime / loopDuration / 2.5);
+                            frame.scale.set(lerp(frame.scale.x, scale * 5, 0.1), lerp(frame.scale.y, scale * 5, 0.1), lerp(frame.scale.z, scale * 5, 0.1));
+
+                            frame.rotation.x += frame.rotationSpeedX;
+                            frame.rotation.y += frame.rotationSpeedY;
+
+                            if (z <= initialZ - totalDistance) {
+                                frame.scale.set(5, 5, 5); // Reset scale
+                            }
+                        }
+                    });
+
+                    plane.lookAt(new THREE.Vector3());
+                    const axisY = plane.rotation.y;
+
+                    const stepSize = 0.025;
+                    const numSteps = 16;
+
+                    if (axisY <= -0.3) {
+                        circle.material.map = textures[0];
+                    } else if (axisY > 0.3) {
+                        circle.material.map = textures[15];
+                    } else {
+                        const index = Math.floor((axisY + 0.3) / stepSize);
+                        circle.material.map = textures[index];
+                    }
+
+                    renderer.render(scene, camera);
+                }
+
+                // Start animation
+                await mindarThree.start();
+                animate(lastTime);
+            }
+
+            start();
+        });
+    </script>
+    <style>
+        html, body { position: relative; margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    </style>
+</head>
+<body></body>
+</html>
